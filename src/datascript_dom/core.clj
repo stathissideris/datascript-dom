@@ -70,17 +70,15 @@
   (concat (take 2 node) children))
 
 (defn dom->transaction [dom]
-  (let [id   (atom 0)
-        walk (fn walk [zipper]
+  (let [walk (fn walk [zipper id]
                (when-not (zip/end? zipper)
                  (let [zipper (zip/replace zipper
-                                           (assoc-in (as-node (zip/node zipper)) [1 ::id]
-                                                     (swap! id dec)))
+                                           (assoc-in (as-node (zip/node zipper)) [1 ::id] id))
                        parent (some-> zipper zip/up zip/node html/attributes ::id)
                        prev (some-> zipper zip/left zip/node html/attributes ::id)]
                    (cons (node-to-transaction (zip/node zipper) parent prev)
-                         (lazy-seq (walk (zip/next zipper)))))))]
-    (walk (zip/zipper has-children? html/children set-children dom))))
+                         (lazy-seq (walk (zip/next zipper) (dec id)))))))]
+    (walk (zip/zipper has-children? html/children set-children dom) -1)))
 
 (defn- dump [dom]
   (let [z (zip/zipper has-children? html/children set-children dom)]
