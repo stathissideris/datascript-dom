@@ -47,7 +47,7 @@
 (defn parse-html-file [filename]
   (html/parse (io/file filename)))
 
-(defn- as-node [node]
+(defn as-node [node]
   (if-not (string? node)
     node
     [:text-node {:text node}]))
@@ -60,20 +60,30 @@
    (when parent {:parent parent})
    (when prev {:prev-sibling prev})))
 
-(defn- has-children? [node]
+(defn has-children? [node]
   (and (vector? node) (> (count node) 2)))
 
-(defn- set-children [node children]
+(defn set-children [node children]
   (concat (take 2 node) children))
+
+(defn replace-node [zipper fun]
+  (zip/replace zipper (fun (zip/node zipper))))
 
 (defn dom->transaction [dom]
   (let [walk (fn walk [zipper id]
                (when-not (zip/end? zipper)
-                 (let [zipper (zip/replace zipper
-                                           (assoc-in (as-node (zip/node zipper)) [1 :db/id] id))
-                       parent (some-> zipper zip/up zip/node html/attributes :db/id)
-                       prev (some-> zipper zip/left zip/node html/attributes :db/id)]
-                   (cons (node-to-transaction (zip/node zipper) parent prev)
+                 (let [zipper    (replace-node zipper as-node)
+                       parent-id (some-> zipper zip/up zip/node html/attributes :db/id)
+                       left      (some-> zipper zip/left zip/node)
+                       left-id   (some-> left html/attributes :db/id)
+                       zipper    (replace-node
+                                  zipper
+                                  #(-> %
+                                       (assoc-in [1 :db/id] id)
+                                       (assoc-in [1 :dom/index]
+                                                 (if (nil? left)
+                                                   0 (inc (some-> left html/attributes :dom/index))))))]
+                   (cons (node-to-transaction (zip/node zipper) parent-id left-id)
                          (lazy-seq (walk (zip/next zipper) (dec id)))))))]
     (walk (zip/zipper has-children? html/children set-children dom) -1)))
 
