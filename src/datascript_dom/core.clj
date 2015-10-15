@@ -53,15 +53,12 @@
     [:text-node {:text node}]))
 
 (defn- node-to-transaction [node parent prev]
-  (->
-   (merge
-    {:tag (first node)}
-    (html/attributes node)
-    (when-let [id (:id node)] {:dom-id id})
-    (when parent {:parent parent})
-    (when prev {:prev-sibling prev}))
-   (dissoc :id ::id)
-   (assoc :db/id (-> node html/attributes ::id))))
+  (merge
+   {:tag (first node)}
+   (html/attributes node)
+   (when-let [id (:id node)] {:dom-id id})
+   (when parent {:parent parent})
+   (when prev {:prev-sibling prev})))
 
 (defn- has-children? [node]
   (and (vector? node) (> (count node) 2)))
@@ -73,9 +70,9 @@
   (let [walk (fn walk [zipper id]
                (when-not (zip/end? zipper)
                  (let [zipper (zip/replace zipper
-                                           (assoc-in (as-node (zip/node zipper)) [1 ::id] id))
-                       parent (some-> zipper zip/up zip/node html/attributes ::id)
-                       prev (some-> zipper zip/left zip/node html/attributes ::id)]
+                                           (assoc-in (as-node (zip/node zipper)) [1 :db/id] id))
+                       parent (some-> zipper zip/up zip/node html/attributes :db/id)
+                       prev (some-> zipper zip/left zip/node html/attributes :db/id)]
                    (cons (node-to-transaction (zip/node zipper) parent prev)
                          (lazy-seq (walk (zip/next zipper) (dec id)))))))]
     (walk (zip/zipper has-children? html/children set-children dom) -1)))
