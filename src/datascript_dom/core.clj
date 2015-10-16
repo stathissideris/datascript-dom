@@ -61,7 +61,7 @@
   (merge
    {:tag (first node)}
    (html/attributes node)
-   (when-let [id (:id node)] {:dom-id id})
+   (when-let [id (:id node)] {:dom/id id})
    (when parent {:parent parent})
    (when prev {:prev-sibling prev})))
 
@@ -75,21 +75,26 @@
   (zip/replace zipper (fun (zip/node zipper))))
 
 (defn dom->transaction [dom]
-  (let [walk (fn walk [zipper id]
-               (when-not (zip/end? zipper)
-                 (let [zipper    (replace-node zipper as-node)
-                       parent-id (some-> zipper zip/up zip/node html/attributes :db/id)
-                       left      (some-> zipper zip/left zip/node)
-                       left-id   (some-> left html/attributes :db/id)
-                       zipper    (replace-node
-                                  zipper
-                                  #(-> %
-                                       (assoc-in [1 :db/id] id)
-                                       (assoc-in [1 :dom/index]
-                                                 (if (nil? left)
-                                                   0 (inc (some-> left html/attributes :dom/index))))))]
-                   (cons (node-to-transaction (zip/node zipper) parent-id left-id)
-                         (lazy-seq (walk (zip/next zipper) (dec id)))))))]
+  (let [walk
+        (fn walk [zipper id]
+          (when-not (zip/end? zipper)
+            (let [zipper    (replace-node zipper as-node) ;;creates text-nodes where necessary
+                  parent-id (some-> zipper zip/up zip/node html/attributes :db/id)
+                  left      (some-> zipper zip/left zip/node)
+                  left-id   (some-> left html/attributes :db/id)
+                  zipper    (replace-node
+                             zipper
+                             #(-> %
+                                  (assoc-in [1 :db/id] id)
+                                  (assoc-in [1 :dom/index]
+                                            (if (nil? left)
+                                              ;;no-one on your left, you're the first sibling
+                                              0
+                                              ;;someone on your left, your index is their index +1
+                                              (inc (some-> left html/attributes :dom/index))
+                                              ))))]
+              (cons (node-to-transaction (zip/node zipper) parent-id left-id)
+                    (lazy-seq (walk (zip/next zipper) (dec id)))))))]
     (walk (zip/zipper has-children? html/children set-children dom) -1)))
 
 (defn- dump [dom]
@@ -104,18 +109,25 @@
 (comment
 
   ;;small toy DOM
-  (def small-dom (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>"))
+  (def small-dom
+    (html/parse-string "<html><body class=\"test\"><p>A<b>B</b>C<i>D</i>E</p><p>hohoho</p></body></html>"))
   ;; [:html {} [:body {} [:p {} "hehe" [:b {} "he"]] [:p {} "hohoho"]]]
   (def small-conn (d/create-conn schema))
   (d/transact small-conn (dom->transaction small-dom))
 
   ;;way more serious IMDB DOM
-  (def dom (parse-html-file "resources/tron.html"))
+  (def dom (html/parse (io/file "resources/tron.html")))
   (def conn (d/create-conn schema))
-  (def _ (d/transact cc (dom->transaction dom)))
+  (def _ (d/transact conn (dom->transaction dom)))
 
 
   ;; THE FOLLOWING QUERIES ARE BEST APPLIED TO THE SMALL DOM (see parse-string above)
+
+  ;;get the <body> tag via its attribute
+  (d/q '[:find [(pull ?node [*]) ...]
+         :where
+         [?node :class "test"]]
+       @small-conn)
   
   ;;find all the tags that have a previous sibling
   (def r
@@ -138,7 +150,8 @@
     (d/q '[:find (pull ?node [*]) .
            :where
            [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @small-conn))
+           [(missing? $ ?node :parent)]]
+         @small-conn))
 
   ;;get the body tag by doing an inverse pull on the root
   (def r
@@ -186,6 +199,7 @@
            :in $ %
            :where
            [?node :tag :p]
+           [?node :dom/index 0]
            (siblings ?node ?sib)]
          @small-conn rules))
 
