@@ -24,7 +24,8 @@
     ;;sibling
     [(siblings ?a ?b)
      [?a :parent ?p]
-     [?b :parent ?p]]
+     [?b :parent ?p]
+     [(!= ?a ?b)]]
 
     [(next-sibling ?this ?next)
      [?next :prev-sibling ?this]]
@@ -37,6 +38,10 @@
      [?text-node :parent ?container]
      [?text-node :tag :text-node]
      [?text-node :text ?text]]
+
+    [(text ?container ?text)
+     [?container :tag :text-node]
+     [?container :text ?text]]
 
     [(path2 ?a ?b)
      [?b :parent ?a]]
@@ -342,21 +347,31 @@
        @conn rules)
 
   (defn tech-spec [conn label]
-    (d/q '[:find ?value-text
-           :in $ % ?label-text
-           :where
-           [?label :tag :h4]
-           [?label :class "inline"]
-           (text ?label ?label-text)
+    (->>
+     (d/q '[:find ?index ?value-text
+            :in $ % ?label-text
+            :where
+            [?label :tag :h4]
+            [?label :class "inline"]
+            (text ?label ?label-text)
 
-           (next-sibling ?label ?value)
-           (text ?value ?value-text)]
-         @conn rules label))
+            (siblings ?label ?value)
+            (text ?value ?value-text)
+            [(!= "|" ?value-text)]
+            (?value :dom/index ?index)]
+          @conn rules label)
+     (sort-by first)
+     (map (comp (fn [x] (.trim x)) second))))
 
   (tech-spec conn "Runtime:")
   (tech-spec conn "Color:")
   (tech-spec conn "Sound Mix:")
-  (tech-spec conn "Aspect Ratio:") ;;fails, because there it's raw text (not in a tag)
+  (tech-spec conn "Aspect Ratio:")
+
+  ;;also works on other labelled fields!
+  (tech-spec conn "Budget:")
+  (tech-spec conn "Gross:")
+  (tech-spec conn "Language:")
   
   )
 
