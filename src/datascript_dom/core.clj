@@ -98,28 +98,21 @@
       (prn (zip/node z))
       (if-not (zip/end? z) (recur (zip/next z))))))
 
-(defn- dump [dom]
-  (let [z (zip/zipper has-children? html/children set-children dom)]
-    (loop [z z]
-      (let [node (zip/node z)]
-        (when (and (not (string? node)) (= :body (first node)))
-          (prn [(first node) (count (nth node 2))])
-          (def ccc (nth node 2)))
-        #_(when-not (string? node)
-            (prn [(first node) (keys (second node))])))
-      (when-not (zip/end? z) (recur (zip/next z))))))
-
 (defn get-touch [db id]
   (d/touch (d/entity db id)))
 
 (comment
+
+  ;;small toy DOM
+  (def small-dom (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>"))
+  ;; [:html {} [:body {} [:p {} "hehe" [:b {} "he"]] [:p {} "hohoho"]]]
+  (def small-conn (d/create-conn schema))
+  (d/transact small-conn (dom->transaction small-dom))
+
+  ;;way more serious IMDB DOM
   (def dom (parse-html-file "resources/tron.html"))
   (def conn (d/create-conn schema))
   (def _ (d/transact cc (dom->transaction dom)))
-  ;; (def dom2 (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>"))
-  ;; [:html {} [:body {} [:p {} "hehe" [:b {} "he"]] [:p {} "hohoho"]]]
-  ;; (def conn (d/create-conn schema))
-  ;; (d/transact conn (dom->transaction dom2))
 
 
   ;; THE FOLLOWING QUERIES ARE BEST APPLIED TO THE SMALL DOM (see parse-string above)
@@ -130,7 +123,7 @@
     (partial get-touch @conn)
     (d/q '[:find [?node ...]
            :where
-           [?node :prev-sibling _]] @conn)))
+           [?node :prev-sibling _]] @small-conn)))
 
   ;;find all the tags that have a next sibling
   (def r
@@ -138,35 +131,35 @@
     (partial get-touch @conn)
     (d/q '[:find [?node ...]
            :where
-           [_ :prev-sibling ?node]] @conn)))
+           [_ :prev-sibling ?node]] @small-conn)))
 
   ;;find root - returns the actual map because of the pull API
   (def r
     (d/q '[:find (pull ?node [*]) .
            :where
            [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @conn))
+           [(missing? $ ?node :parent)]] @small-conn))
 
   ;;get the body tag by doing an inverse pull on the root
   (def r
     (d/q '[:find (pull ?node [{:_parent [*]}])
            :where
            [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @conn))
+           [(missing? $ ?node :parent)]] @small-conn))
 
   ;;get the children of the children of root with all their attributes
   (def r
     (d/q '[:find (pull ?node [{:_parent [{:_parent [*]}]}])
            :where
            [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @conn))
+           [(missing? $ ?node :parent)]] @small-conn))
 
   ;;find root with a rule - returns the id because of the simple find
   (def r
     (d/q '[:find ?node .
            :in $ %
            :where (root ?node)]
-         @conn
+         @small-conn
          '[[(root ?node)
             [?node _ _]
             [(missing? $ ?node :parent)]]]))
@@ -181,7 +174,7 @@
            :where
            [?node :tag :b]
            (anc ?anc ?node)]
-         @conn
+         @small-conn
          '[[(anc ?par ?child)
             (?child :parent ?par)]
            [(anc ?anc ?child)
@@ -194,7 +187,7 @@
            :where
            [?node :tag :p]
            (siblings ?node ?sib)]
-         @conn rules))
+         @small-conn rules))
 
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;;                                                         ;;
