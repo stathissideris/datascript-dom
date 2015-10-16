@@ -238,6 +238,14 @@
     {:title title
      :year  year})
 
+  ;;overview
+  (d/q '[:find ?overview .
+         :in $ %
+         :where
+         [?node :itemprop "description"]
+         (text ?node ?overview)]
+       @conn rules)
+  
   ;;ratings
   (d/q '[:find [?rating ?count]
          :in $ %
@@ -314,6 +322,41 @@
             [(?trim ?character-name-dirty) ?character-name]
             [(!= "/" ?character-name)]]
           @conn rules (fn [x] (.trim (string/replace x #"\s+" " "))))))
+
+  ;;Extract genres
+  (d/q '[:find [?g ...]
+         :in $ %
+         :where
+         [?div :itemprop "genre"]
+         [?a :parent ?div]
+         [?a :tag :a]
+         (text ?a ?g)]
+       @conn rules)
+
+  ;;Duration
+  (d/q '[:find ?duration .
+         :in $ %
+         :where
+         [?node :itemprop "duration"]
+         (text ?node ?duration)]
+       @conn rules)
+
+  (defn tech-spec [conn label]
+    (d/q '[:find ?value-text
+           :in $ % ?label-text
+           :where
+           [?label :tag :h4]
+           [?label :class "inline"]
+           (text ?label ?label-text)
+
+           (next-sibling ?label ?value)
+           (text ?value ?value-text)]
+         @conn rules label))
+
+  (tech-spec conn "Runtime:")
+  (tech-spec conn "Color:")
+  (tech-spec conn "Sound Mix:")
+  (tech-spec conn "Aspect Ratio:") ;;fails, because there it's raw text (not in a tag)
   
   )
 
