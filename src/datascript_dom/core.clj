@@ -109,14 +109,16 @@
 
 (comment
   (def dom (parse-html-file "resources/tron.html"))
-  (def cc (d/create-conn schema))
-  (def conn cc)
-  (def _ (d/transact cc (dom->transaction dom)))
-  (def dom2 (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>"))
-  ;; [:html {} [:body {} [:p {} "hehe" [:b {} "he"]] [:p {} "hohoho"]]]
   (def conn (d/create-conn schema))
-  (d/transact conn (dom->transaction dom2))
+  (def _ (d/transact cc (dom->transaction dom)))
+  ;; (def dom2 (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>"))
+  ;; [:html {} [:body {} [:p {} "hehe" [:b {} "he"]] [:p {} "hohoho"]]]
+  ;; (def conn (d/create-conn schema))
+  ;; (d/transact conn (dom->transaction dom2))
 
+
+  ;; THE FOLLOWING QUERIES ARE BEST APPLIED TO THE SMALL DOM (see parse-string above)
+  
   ;;find all the tags that have a previous sibling
   (def r
    (map
@@ -189,6 +191,12 @@
            (siblings ?node ?sib)]
          @conn rules))
 
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  ;;                                                         ;;
+  ;;   THE FOLLOWING QUERIES ARE DESIGNED FOR THE IMDB DOM   ;;
+  ;;                                                         ;;
+  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  
   ;;failed attempt to find the title
   (def r
     (d/q '[:find ?text
@@ -248,52 +256,64 @@
          [?review-node :itemprop "reviewCount"]
          (text ?review-node ?reviews)]
        @conn rules)
-  
-  ;;the important guys follow this pattern
-  ;;(actors whose names have links)
+
+  ;;Extract Cast - part 1
+  ;;The important guys follow this pattern (actors whose names have
+  ;;links). Note that you get one entry per character, the same actor
+  ;;can depict more than one character.
   (clojure.pprint/pprint
    (let [cast
-         (d/q '[:find ?actor-name ?link ?character-name ?character-link
+         (d/q '[:find ?index ?actor-name ?link ?character-name ?character-link
                 :in $ %
                 :where
+
+                ;;extract the index of the row so that we know the order
+                [?actor-n :parent ?tr]
+                [?tr :dom/index ?index]
+
+                ;;extract the name of the actor and the link to their profile
                 [?actor-n :itemprop "actor"]
                 (path3 ?actor-n ?actor-link-n ?actor-name-n)
                 (text ?actor-name-n ?actor-name)
                 (?actor-link-n :href ?link)
 
+                ;;extract the name of the character(s) played by the actor and link(s)
                 (siblings ?character-n ?actor-n)
                 [?character-n :class "character"]
                 (path3 ?character-n ?div ?character-link-n)
                 (?character-link-n :href ?character-link)
                 (text ?character-link-n ?character-name)]
               @conn rules)]
-     (map (partial zipmap [:actor :link :character :character-link]) cast)))
+     (->> (map (partial zipmap [:index :actor :link :character :character-link]) cast)
+          (sort-by :index))))
 
+  ;;Extract Cast - part 2
   ;;the unimportant guys follow this pattern
   ;;(actors whose names don't have links)
   (def r
-    (d/q '[:find ?actor-name ?link ?character-name
-           :in $ % ?trim
-           :where
-           [?actor-n :itemprop "actor"]
-           (path3 ?actor-n ?actor-link-n ?actor-name-n)
-           (text ?actor-name-n ?actor-name)
-           (?actor-link-n :href ?link)
+    (sort-by first
+     (d/q '[:find ?index ?actor-name ?link ?character-name
+            :in $ % ?trim
+            :where
+            [?actor-n :parent ?tr]
+            [?tr :dom/index ?index]
+           
+            [?actor-n :itemprop "actor"]
+            (path3 ?actor-n ?actor-link-n ?actor-name-n)
+            (text ?actor-name-n ?actor-name)
+            (?actor-link-n :href ?link)
 
-           (siblings ?character-n ?actor-n)
-           [?character-n :class "character"]
-           (path2 ?character-n ?div)
+            (siblings ?character-n ?actor-n)
+            [?character-n :class "character"]
+            (path2 ?character-n ?div)
 
-           ;;the above matches the important characters as well, so we
-           ;;clean the name and if we matched the "/" between the
-           ;;character links, we filter those entries out
-           (text ?div ?character-name-dirty)
-           [(?trim ?character-name-dirty) ?character-name]
-           [(!= "/" ?character-name)]]
-         @conn rules (fn [x] (.trim (string/replace x #"\s+" " ")))))
+            ;;the above matches the important characters as well, so we
+            ;;clean the name and if we matched the "/" between the
+            ;;character links, we filter those entries out
+            (text ?div ?character-name-dirty)
+            [(?trim ?character-name-dirty) ?character-name]
+            [(!= "/" ?character-name)]]
+          @conn rules (fn [x] (.trim (string/replace x #"\s+" " "))))))
   
   )
 
-(comment
-  (dom->transaction
-   (html/parse-string "<html><body><p>hehe<b>he</b></p><p>hohoho</p></body></html>")))
