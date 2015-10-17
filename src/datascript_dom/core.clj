@@ -60,7 +60,7 @@
 (defn parse-html-file [filename]
   (html/parse (io/file filename)))
 
-(defn as-node [node]
+(defn- to-entity [node]
   (if-not (string? node)
     (merge
      {:dom/tag (html/tag node)}
@@ -71,29 +71,29 @@
     {:dom/tag :text-node
      :text    node}))
 
-(defn has-children? [node]
+(defn- has-children? [node]
   (not-empty (:child node)))
 
-(defn set-children [node children]
+(defn- set-children [node children]
   (assoc node :child children))
 
-(defn replace-node [zipper fun]
+(defn- replace-node [zipper fun]
   (zip/replace zipper (fun (zip/node zipper))))
+
+(defn- assoc-dom-index [zipper]
+  (let [new-index (some-> zipper zip/left zip/node :dom/index inc)]
+    (zip/replace
+     zipper
+     (-> zipper
+         zip/node
+         to-entity
+         (assoc :dom/index (or new-index 0))))))
 
 (defn dom->transaction [dom]
   (loop [zipper (zip/zipper has-children? :child set-children dom)]
     (if (zip/end? zipper)
       [(zip/root zipper)]
-      (let [left   (some-> zipper zip/left zip/node)
-            zipper (replace-node
-                    zipper
-                    #(assoc (as-node %) :dom/index
-                            (if (nil? left)
-                              ;;no-one on your left, you're the first sibling
-                              0
-                              ;;someone on your left, your index is their index +1
-                              (some-> left :dom/index inc))))]
-        (recur (zip/next zipper))))))
+      (recur (zip/next (assoc-dom-index zipper))))))
 
 (defn- dump [dom]
   (let [z (zip/zipper has-children? html/children set-children dom)]
