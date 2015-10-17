@@ -6,45 +6,53 @@
             [clojure.string :as string]))
 
 (def schema
-  {:parent       {:db/valueType :db.type/ref}
-   :prev-sibling {:db/valueType :db.type/ref}})
+  {:child {:db/valueType   :db.type/ref
+           :db/cardinality :db.cardinality/many}})
 
 (def rules
   '[[(root ?node)
      [?node _ _]
-     [(missing? $ ?node :parent)]]
+     [(missing? $ ?node :_child)]]
 
     ;;ancestor
     [(anc ?par ?child)
-     (?child :parent ?par)]
+     (?par :child ?child)]
     [(anc ?anc ?child)
-     (?child :parent ?par)
+     (?par :child ?child)
      (anc ?anc ?par)]
 
     ;;sibling
     [(siblings ?a ?b)
-     [?a :parent ?p]
-     [?b :parent ?p]
+     [?p :child ?a]
+     [?p :child ?b]
      [(!= ?a ?b)]]
 
-    [(next-sibling ?this ?next)
-     [?next :prev-sibling ?this]]
+    [(prev-sibling ?this ?sib)
+     (siblings ?sib ?this)
+     [?this :dom/index ?i1]
+     [?sib :dom/index ?i2]
+     [(- ?i2 ?i1) ?diff]
+     [(= ?diff -1)]]
     
-    [(next-sibling ?this ?prev)
-     [?this :prev-sibling ?prev]]
+    [(next-sibling ?this ?sib)
+     (siblings ?sib ?this)
+     [?this :dom/index ?i1]
+     [?sib :dom/index ?i2]
+     [(- ?i2 ?i1) ?diff]
+     [(= ?diff 1)]]
 
     ;;get all text of text nodes in container
     [(text ?container ?text)
-     [?text-node :parent ?container]
-     [?text-node :tag :text-node]
+     [?container :child ?text-node]
+     [?text-node :dom/tag :text-node]
      [?text-node :text ?text]]
 
     [(text ?container ?text)
-     [?container :tag :text-node]
+     [?container :dom/tag :text-node]
      [?container :text ?text]]
 
     [(path2 ?a ?b)
-     [?b :parent ?a]]
+     [?a :child ?b]]
     [(path3 ?a ?b ?c)
      (path2 ?a ?b)
      (path2 ?b ?c)]])
@@ -54,48 +62,38 @@
 
 (defn as-node [node]
   (if-not (string? node)
-    node
-    [:text-node {:text node}]))
-
-(defn- node-to-transaction [node parent prev]
-  (merge
-   {:tag (first node)}
-   (html/attributes node)
-   (when-let [id (:id node)] {:dom/id id})
-   (when parent {:parent parent})
-   (when prev {:prev-sibling prev})))
+    (merge
+     {:dom/tag (html/tag node)}
+     (dissoc (html/attributes node) :id)
+     (when-let [id (:id node)] {:dom/id id})
+     (when-let [children (html/children node)]
+       {:child children}))
+    {:dom/tag :text-node
+     :text    node}))
 
 (defn has-children? [node]
-  (and (vector? node) (> (count node) 2)))
+  (not-empty (:child node)))
 
 (defn set-children [node children]
-  (concat (take 2 node) children))
+  (assoc node :child children))
 
 (defn replace-node [zipper fun]
   (zip/replace zipper (fun (zip/node zipper))))
 
 (defn dom->transaction [dom]
-  (let [walk
-        (fn walk [zipper id]
-          (when-not (zip/end? zipper)
-            (let [zipper    (replace-node zipper as-node) ;;creates text-nodes where necessary
-                  parent-id (some-> zipper zip/up zip/node html/attributes :db/id)
-                  left      (some-> zipper zip/left zip/node)
-                  left-id   (some-> left html/attributes :db/id)
-                  zipper    (replace-node
-                             zipper
-                             #(-> %
-                                  (assoc-in [1 :db/id] id)
-                                  (assoc-in [1 :dom/index]
-                                            (if (nil? left)
-                                              ;;no-one on your left, you're the first sibling
-                                              0
-                                              ;;someone on your left, your index is their index +1
-                                              (inc (some-> left html/attributes :dom/index))
-                                              ))))]
-              (cons (node-to-transaction (zip/node zipper) parent-id left-id)
-                    (lazy-seq (walk (zip/next zipper) (dec id)))))))]
-    (walk (zip/zipper has-children? html/children set-children dom) -1)))
+  (loop [zipper (zip/zipper has-children? :child set-children dom)]
+    (if (zip/end? zipper)
+      [(zip/root zipper)]
+      (let [left   (some-> zipper zip/left zip/node)
+            zipper (replace-node
+                    zipper
+                    #(assoc (as-node %) :dom/index
+                            (if (nil? left)
+                              ;;no-one on your left, you're the first sibling
+                              0
+                              ;;someone on your left, your index is their index +1
+                              (some-> left :dom/index inc))))]
+        (recur (zip/next zipper))))))
 
 (defn- dump [dom]
   (let [z (zip/zipper has-children? html/children set-children dom)]
@@ -124,84 +122,59 @@
   ;; THE FOLLOWING QUERIES ARE BEST APPLIED TO THE SMALL DOM (see parse-string above)
 
   ;;get the <body> tag via its attribute
-  (d/q '[:find [(pull ?node [*]) ...]
+  (d/q '[:find (pull ?node [:dom/tag]) .
          :where
          [?node :class "test"]]
        @small-conn)
   
-  ;;find all the tags that have a previous sibling
-  (def r
-   (map
-    (partial get-touch @conn)
-    (d/q '[:find [?node ...]
-           :where
-           [?node :prev-sibling _]] @small-conn)))
-
-  ;;find all the tags that have a next sibling
-  (def r
-   (map
-    (partial get-touch @conn)
-    (d/q '[:find [?node ...]
-           :where
-           [_ :prev-sibling ?node]] @small-conn)))
-
   ;;find root - returns the actual map because of the pull API
-  (def r
-    (d/q '[:find (pull ?node [*]) .
-           :where
-           [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]]
-         @small-conn))
-
-  ;;get the body tag by doing an inverse pull on the root
-  (def r
-    (d/q '[:find (pull ?node [{:_parent [*]}])
-           :where
-           [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @small-conn))
-
-  ;;get the children of the children of root with all their attributes
-  (def r
-    (d/q '[:find (pull ?node [{:_parent [{:_parent [*]}]}])
-           :where
-           [?node _ _] ;;not sure why we need this
-           [(missing? $ ?node :parent)]] @small-conn))
+  (d/q '[:find (pull ?node [:dom/tag]) .
+         :where
+         [?node _]
+         [(missing? $ ?node :_child)]]
+       @small-conn)
 
   ;;find root with a rule - returns the id because of the simple find
   (def r
     (d/q '[:find ?node .
            :in $ %
            :where (root ?node)]
-         @small-conn
-         '[[(root ?node)
-            [?node _ _]
-            [(missing? $ ?node :parent)]]]))
+         @small-conn rules))
 
-  (->> r (d/entity @conn) :_parent first ;;gets <body> tag
-       :_parent (map d/touch)) ;;gets the two paragraph tag
+  (->> r (d/entity @small-conn) :child first ;;gets <body> tag
+       :child (map d/touch)) ;;gets the two paragraph tags
   
   ;;get all ancestors of <b>
-  (def r
-    (d/q '[:find [(pull ?anc [*]) ...]
-           :in $ %
-           :where
-           [?node :tag :b]
-           (anc ?anc ?node)]
-         @small-conn
-         '[[(anc ?par ?child)
-            (?child :parent ?par)]
-           [(anc ?anc ?child)
-            (?child :parent ?par)
-            (anc ?anc ?par)]])) ;;recursive rule yo!
+  (d/q '[:find [(pull ?anc [:dom/tag]) ...]
+         :in $ %
+         :where
+         [?node :dom/tag :b]
+         (anc ?anc ?node)]
+       @small-conn rules)
 
-  (def r
-    (d/q '[:find [(pull ?sib [*]) ...]
-           :in $ %
-           :where
-           [?node :tag :p]
-           [?node :dom/index 0]
-           (siblings ?node ?sib)]
-         @small-conn rules))
+  ;;get all siblings of <b>
+  (d/q '[:find (pull ?sib [*])
+         :in $ %
+         :where
+         [?node :dom/tag :b]
+         (siblings ?node ?sib)]
+       @small-conn rules)
+
+  ;;get previous sibling of <b>
+  (d/q '[:find (pull ?sib [:dom/tag :text]) .
+         :in $ %
+         :where
+         [?node :dom/tag :b]
+         (prev-sibling ?node ?sib)]
+       @small-conn rules)
+
+  ;;get next sibling of <b>
+  (d/q '[:find (pull ?sib [:dom/tag :text]) .
+         :in $ %
+         :where
+         [?node :dom/tag :b]
+         (next-sibling ?node ?sib)]
+       @small-conn rules)
 
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;;                                                         ;;
@@ -209,25 +182,15 @@
   ;;                                                         ;;
   ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   
-  ;;failed attempt to find the title
-  (def r
-    (d/q '[:find ?text
-           :where
-           [?node :tag :span]
-           [?node :itemprop "name"]
-           [?text-node :parent ?node]
-           [?text-node :text ?text]]
-         @conn))
-
   ;;find title
   (def r
     (d/q '[:find ?text .
            :where
-           [?h1 :tag :h1]
-           [?node :parent ?h1]
-           [?node :tag :span]
+           [?h1 :dom/tag :h1]
+           [?h1 :child ?node]
+           [?node :dom/tag :span]
            [?node :itemprop "name"]
-           [?text-node :parent ?node]
+           [?node :child ?text-node]
            [?text-node :text ?text]]
          @conn))
 
@@ -236,15 +199,15 @@
         (d/q '[:find [?title ?year]
                :in $ %
                :where
-               [?h1 :tag :h1]
-               [?name-node :parent ?h1]
-               [?name-node :tag :span]
+               [?h1 :dom/tag :h1]
+               [?h1 :child ?name-node]
+               [?name-node :dom/tag :span]
                [?name-node :itemprop "name"]
                (text ?name-node ?title)
 
                (next-sibling ?name-node ?year-node) ;;year-node is the next sibling of name-node
-               (?a-node :parent ?year-node) ;;...and it contains an <a> tag
-               (?a-node :tag :a)
+               (?year-node :child ?a-node) ;;...and it contains an <a> tag
+               (?a-node :dom/tag :a)
                (text ?a-node ?year)] ;;and the <a> tag contains the year
              @conn rules)]
     {:title title
@@ -288,7 +251,7 @@
                 :where
 
                 ;;extract the index of the row so that we know the order
-                [?actor-n :parent ?tr]
+                [?tr :child ?actor-n]
                 [?tr :dom/index ?index]
 
                 ;;extract the name of the actor and the link to their profile
@@ -315,7 +278,7 @@
      (d/q '[:find ?index ?actor-name ?link ?character-name
             :in $ % ?trim
             :where
-            [?actor-n :parent ?tr]
+            [?tr :child ?actor-n]
             [?tr :dom/index ?index]
            
             [?actor-n :itemprop "actor"]
@@ -340,8 +303,8 @@
          :in $ %
          :where
          [?div :itemprop "genre"]
-         [?a :parent ?div]
-         [?a :tag :a]
+         [?div :child ?a]
+         [?a :dom/tag :a]
          (text ?a ?g)]
        @conn rules)
 
@@ -358,7 +321,7 @@
      (d/q '[:find ?index ?value-text
             :in $ % ?label-text
             :where
-            [?label :tag :h4]
+            [?label :dom/tag :h4]
             [?label :class "inline"]
             (text ?label ?label-text)
 

@@ -1,22 +1,81 @@
 (ns datascript-dom.core-test
   (:require [clojure.test :refer :all]
             [datascript-dom.core :refer :all]
+            [datascript.core :as d]
             [pl.danieljanus.tagsoup :as html]
             [clojure.zip :as zip]))
 
 (deftest test-dom->transaction
   (is (=
-       [{:tag :html :db/id -1 :dom/index 0}
-        {:tag :body :class "test" :parent -1 :db/id -2 :dom/index 0}
-        {:tag :p :parent -2 :db/id -3 :dom/index 0}
-        {:tag :text-node :text "A" :parent -3 :db/id -4 :dom/index 0}
-        {:tag :b :parent -3 :prev-sibling -4 :db/id -5 :dom/index 1}
-        {:tag :text-node :text "B" :parent -5 :db/id -6 :dom/index 0}
-        {:tag :text-node :text "C" :parent -3 :prev-sibling -5 :db/id -7 :dom/index 2}
-        {:tag :i :parent -3 :prev-sibling -7 :db/id -8 :dom/index 3}
-        {:tag :text-node :text "D" :parent -8 :db/id -9 :dom/index 0}
-        {:tag :text-node :text "E" :parent -3 :prev-sibling -8 :db/id -10 :dom/index 4}
-        {:tag :p :parent -2 :prev-sibling -3 :db/id -11 :dom/index 1}
-        {:tag :text-node :text "hohoho" :parent -11 :db/id -12 :dom/index 0}]
+       [{:dom/tag :html,
+         :child
+         [{:dom/tag :body,
+           :class "test",
+           :child
+           [{:dom/tag :p,
+             :child
+             [{:dom/tag :text-node, :text "A", :dom/index 0}
+              {:dom/tag :b,
+               :child [{:dom/tag :text-node, :text "B", :dom/index 0}],
+               :dom/index 1}
+              {:dom/tag :text-node, :text "C", :dom/index 2}
+              {:dom/tag :i,
+               :child [{:dom/tag :text-node, :text "D", :dom/index 0}],
+               :dom/index 3}
+              {:dom/tag :text-node, :text "E", :dom/index 4}],
+             :dom/index 0}
+            {:dom/tag :p,
+             :child [{:dom/tag :text-node, :text "hohoho", :dom/index 0}],
+             :dom/index 1}],
+           :dom/index 0}],
+         :dom/index 0}]
        (dom->transaction
         (html/parse-string "<html><body class=\"test\"><p>A<b>B</b>C<i>D</i>E</p><p>hohoho</p></body></html>")))))
+
+(deftest basic-queries
+  (let [html "<html><body class=\"test\"><p>A<b>B</b>C<i>D</i>E</p><p>hohoho</p></body></html>"
+        dom  (html/parse-string html)
+        conn (d/create-conn schema)]
+    @(d/transact conn (dom->transaction dom))
+
+    (is (= {:dom/tag :body}
+           (d/q '[:find (pull ?node [:dom/tag]) .
+                  :where
+                  [?node :class "test"]] @conn)))
+
+    (is (= {:dom/tag :html}
+           (d/q '[:find (pull ?node [:dom/tag]) .
+                  :where
+                  [?node _]
+                  [(missing? $ ?node :_child)]] @conn)))
+
+    (is (= {:dom/tag :html}
+           (d/q '[:find (pull ?node [:dom/tag]) .
+                  :in $ %
+                  :where
+                  (root ?node)]
+                @conn rules)))
+
+    (is (= [{:dom/tag :p} {:dom/tag :body} {:dom/tag :html}]
+           (d/q '[:find [(pull ?anc [:dom/tag]) ...]
+                  :in $ %
+                  :where
+                  [?node :dom/tag :b]
+                  (anc ?anc ?node)]
+                @conn rules)))
+
+    (is (= [{:dom/tag :text-node, :text "A"}]
+           (d/q '[:find [(pull ?sib [:dom/tag :text]) ...]
+                  :in $ %
+                  :where
+                  [?node :dom/tag :b]
+                  (prev-sibling ?node ?sib)]
+                @conn rules)))
+
+    (is (= [{:dom/tag :text-node, :text "C"}]
+           (d/q '[:find [(pull ?sib [:dom/tag :text]) ...]
+                  :in $ %
+                  :where
+                  [?node :dom/tag :b]
+                  (next-sibling ?node ?sib)]
+                @conn rules)))))
