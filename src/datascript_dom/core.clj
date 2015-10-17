@@ -64,39 +64,45 @@
   (if-not (string? node)
     (merge
      {:dom/tag (html/tag node)}
+     
+     ;;include attributes, but not :id
      (dissoc (html/attributes node) :id)
+
+     ;;id will ne given a special name
      (when-let [id (:id node)] {:dom/id id})
+
+     ;;assoc children -- if present
      (when-let [children (html/children node)]
        {:child children}))
+
+    ;;if it's a string, encode as text-node
     {:dom/tag :text-node
      :text    node}))
 
-(defn- has-children? [node]
-  (not-empty (:child node)))
-
-(defn- set-children [node children]
-  (assoc node :child children))
-
-(defn- replace-node [zipper fun]
-  (zip/replace zipper (fun (zip/node zipper))))
-
-(defn- assoc-dom-index [zipper]
-  (let [new-index (some-> zipper zip/left zip/node :dom/index inc)]
+(defn- replace-node [zipper]
+  (let [dom-index (or (some-> zipper zip/left zip/node :dom/index inc) 0)]
     (zip/replace
      zipper
      (-> zipper
          zip/node
          to-entity
-         (assoc :dom/index (or new-index 0))))))
+         (assoc :dom/index dom-index)))))
+
+(defn dom-zipper [dom]
+  (zip/zipper
+   (fn [node] (not-empty (:child node))) ;;branch?
+   :child
+   (fn [node children] (assoc node :child children)) ;;make-node
+   dom))
 
 (defn dom->transaction [dom]
-  (loop [zipper (zip/zipper has-children? :child set-children dom)]
+  (loop [zipper (dom-zipper dom)]
     (if (zip/end? zipper)
       [(zip/root zipper)]
-      (recur (zip/next (assoc-dom-index zipper))))))
+      (recur (zip/next (replace-node zipper))))))
 
 (defn- dump [dom]
-  (let [z (zip/zipper has-children? html/children set-children dom)]
+  (let [z (dom-zipper dom)]
     (loop [z z]
       (prn (zip/node z))
       (if-not (zip/end? z) (recur (zip/next z))))))
@@ -122,24 +128,26 @@
   ;; THE FOLLOWING QUERIES ARE BEST APPLIED TO THE SMALL DOM (see parse-string above)
 
   ;;get the <body> tag via its attribute
-  (d/q '[:find (pull ?node [:dom/tag]) .
+  (d/q '[:find [(pull ?node [*]) ...]
          :where
          [?node :class "test"]]
        @small-conn)
   
-  ;;find root - returns the actual map because of the pull API
+  ;;find root
   (d/q '[:find (pull ?node [:dom/tag]) .
          :where
          [?node _]
          [(missing? $ ?node :_child)]]
        @small-conn)
 
-  ;;find root with a rule - returns the id because of the simple find
-  (def r
-    (d/q '[:find ?node .
-           :in $ %
-           :where (root ?node)]
-         @small-conn rules))
+  ;;find root with a rule
+  (d/q '[:find (pull ?node [:dom/tag]) .
+         :in $ %
+         :where (root ?node)]
+       @small-conn
+       '[[(root ?node)
+          [?node _]
+          [(missing? $ ?node :_child)]]])
 
   (->> r (d/entity @small-conn) :child first ;;gets <body> tag
        :child (map d/touch)) ;;gets the two paragraph tags
